@@ -1,0 +1,266 @@
+Data ADSL;
+length USUBJID $ 3;
+label USUBJID = "Unique Subject Identifier"
+	  TRTPN = "Planned Treatment (N)";
+input USUBJID $ TRTPN @@;
+datalines;
+101 1  102 0  103 0  104 1  105 1  106 0  107 1  108 1  109 0  110 1
+111 0  112 1  113 0  114 1  115 0  116 1  117 0  118 0  119 1  120 0
+121 1  122 0  123 1  124 1  125 0  126 1  127 0  128 1  129 0  130 0
+131 0  132 1  133 0  134 1  135 1  136 0  137 1  138 0  139 1  140 0
+141 1  142 0  143 1  144 0  145 1  146 0  147 1  148 1  149 0  150 1
+151 0  152 1  153 0  154 1  155 1  156 0  157 1  158 0  159 1  160 0
+161 1  162 0  163 1  164 0  165 1  166 0  167 1  168 0  169 0  170 1
+;
+run;
+
+*****Input ADVERSE EVEBT DATA as SDTM AE domain*******;
+data AE;
+label USUBJID = "Unique Subject Identifier"
+	  AEBODSYS = "Body System or Organ Class"
+	  AEDECOD = "Dictionary-Derived Term"
+	  AEREL = "Causality"
+	  AESEV = "Severity/Intensity";
+Input USUBJID $ 1-3 AEBODSYS $ 5-30 AEDECOD $ 34-50
+	  AEREL $ 52-67 AESEV $ 70-77;
+datalines;
+101 Cardiac disorders            Atrial flutter    NOT RELATED       MILD
+101 Gastrointestinal disorders   Constipation      POSSIBLE RELATED  MILD
+102 Cardiac disorders            Cardiac failure   POSSIBLE RELATED  MODERATE
+102 Psychiatric disorders        Delirium          NOT RELATED       MILD
+103 Cardiac disorders            Palpitation       NOT RELATED       MILD
+103 Cardiac disorders            Palpitation       NOT RELATED       MODERATE
+103 Cardiac disorders            Tachycardia       POSSIBLY RELATED  MODERATE
+115 Gastrointestinal disorders   Abdominal pain    RELATED           MODERATE
+115 Gastrointestinal disorders   Anal ulcer        RELATED           MILD
+116 Gastrointestinal disorders   Constipation      POSSIBLY RELATED  MILD
+117 Gastrointestinal disorders   Dyspepsia         POSSIBLY RELATED  MODERATE
+118 Gastrointestinal disorders   Flatulence        RELATED           SEVERE
+119 Gastrointestinal disorders   Hiatus hernia     NOT RELATED       MILD
+130 Nervous system disorders     Convulsion        NOT RELATED       MODERATE
+131 Nervous system disorders     Dizziness         POSSIBLY RELATED  SEVERE
+132 Nervous system disorders     Essential tremor  NOT RELATED       MILD
+135 Psychiatric disorders        Confusional state NOT RELATED       SEVERE
+140 Psychiatric disorders        Delirium          NOT RELATED       MILD
+140 Psychiatric disorders        Sleep disorder    POSSIBLY RELATED  MILD
+141 Cardiac disorders            Palpitations      NOT RELATED       SEVERE
+;
+run;
+
+*** Create ADAE ADAM DATASET to make helpful counting flags for summarization****;
+data adae;
+merge ae(in = inae) adsl;
+	by usubjid;
+	
+	if inae;
+	
+	select (aesev);
+	when ('MILD') aesevn = 1;
+	when ('MODERATE') aesevn = 2;
+	when ('SEVERE') aesevn = 3;
+	otherwise;
+	end;
+	label aesevn = "Severity/Intensity (N)";
+	run;
+	
+proc sort 
+data = adae;
+by usubjid aesevn;
+run;
+
+data adae;
+set adae;
+by usubjid aesevn;
+
+if last.usubjid then aoccifl = 'Y';
+
+label aoccifl = "1st Max Sev./Int.Occurrence Flag";
+run;
+
+proc sort 
+	data = adae;
+	by usubjid aebodsys aesevn;
+run;
+
+data adae ;
+set adae ;
+by usubjid aebodsys aesevn;
+
+	if last.aebodsys then 
+	aoccsifl = 'Y';
+	label aoccsifl = "1st Max Sev./Int. Occur Within SOC Flag";
+	run;
+	
+proc sort 
+	data = adae;
+	by usubjid aedecod aesevn ;
+	run;
+	
+data adae;
+set adae;
+by usubjid aedecod aesevn ;
+
+	if last.aedecod then 
+	aoccpifl = 'Y';
+	label aoccpifl = "1st Max Sev./Int . occur Within PT Flag";
+	run;
+
+*******Put Counts Of Treatment Populations Into Macro Variables******;
+proc sql noprint;
+	select count (unique usubjid) format = 3.
+		   into :n0 from adsl where trtpn=0;
+	select count (unique usubjid) format = 3.
+		   into :n1 from adsl where trtpn=1;
+	select count (unique usubjid) format = 3.
+		   into :n2 from adsl;
+quit;
+
+*******Output A Summary Treatment Set Of Records. TRTPN=2;*****;
+data adae;
+set adae;
+output;
+trtpn = 2;
+output;
+run;
+
+******By Severity Only Count********;
+proc sql noprint;
+	create table All as 
+		select trtpn,
+			sum(aoccifl ='Y') as frequency from adae 
+		group by trtpn;
+quit;
+
+proc sql noprint;
+	create table AllBySev as 
+		select aesev,trtpn,
+			sum(aoccifl = 'Y') as frequency from adae
+			group by aesev,trtpn;
+quit;
+
+********By Body System and Severity Counts*******;
+proc sql noprint;
+	create table AllBodysys as
+		select trtpn, aebodsys,
+			sum(aoccsifl = 'Y') as frequency from adae
+			group by trtpn,aebodsys;
+quit;
+
+proc sql noprint ;
+	create table AllBodysysBySev as 
+		select aesev, trtpn, aebodsys,
+			sum(aoccsifl = 'Y') as frequency from adae
+			group by aesev , trtpn , aebodsys;
+quit;
+
+
+*******By Prefferred term and Severity Counts*********;
+proc sql noprint;
+	create table AllPT as 
+		select trtpn,aebodsys,aedecod,
+			sum(aoccpifl = 'Y') as frequency from adae 
+			group by trtpn , aebodsys,aedecod;
+quit;
+
+proc sql noprint;
+	create table AllPTBySev as 
+		select aesev,trtpn,aebodsys, aedecod,
+			sum(aoccpifl = 'Y') as frequency from adae
+			group by aesev , trtpn ,aebodsys,aedecod;
+quit;
+
+
+*****PUTT all count Data Together;
+Data all;
+	Set All(in=in1)
+		AllBySev(in=in2)
+		AllBodysys(in=in3)
+		AllBodysysBySev(in=in4)
+		AllPT(in=in5)
+		AllPTBySev(in=in6);
+		
+		length description $ 40 sorter $ 200;
+		if in1 then 
+			description ='Any Event';
+		else if in2 or in4 or in6 then
+			description = '#{nbspace 6} ' || propcase(aesev);
+		else if in3 then 
+			description = aebodsys;
+		else if in5 then 
+			description = '#{nbspace 3}' || aedecod;
+			
+			sorter = aebodsys || aedecod || aesev;
+run;
+
+proc sort 
+data = all ;
+by sorter aebodsys aedecod description;
+run;
+
+****transpose the frequency count********;
+proc transpose 
+	data=all
+	out=flat
+	prefix=count;
+	by sorter aebodsys aedecod description;
+	id trtpn;
+	var frequency;
+run ;
+
+proc sort 
+	data=flat;
+	by aebodsys aedecod sorter;
+run;
+
+******Create a Section Break Variable And Formatted Columns*******;
+data flat ;
+	set flat ;
+	by aebodsys aedecod sorter;
+	
+	retain section 1;
+	
+	length col0 col1 col2 $ 20;
+	if count0 not in (.,0) then
+		col0 = put(count0,3.) || " (" || put(count0/&n0*100,5.1) || "%)";
+	if count1 not in (.,0) then 
+		col1 = put(count1,3.) || " (" || put(count1/&n1*100,5.1) || "%)";
+	if count2 not in (.,0) then
+		col2 = put(count2,3.) || " (" || put(count2/&n2*100,5.1) || "%)";
+		
+	if sum(count0,count1,count2)>0 then
+		output;
+	if last.aedecod then
+		section + 1;
+run;
+
+*******Use Proc Report to Write Table to File********;
+options nodate nonumber missing = ' ';
+ods escapechar ='#';
+ods pdf style = htmlblue file ='ADRprogram5.1.pdf';
+
+proc report 
+	data=flat
+	nowindows 
+	split = "|";
+	
+	columns section description col1 col0  col2;
+	
+	define section		/order order = internal noprint;
+	define description 	/display style(header) =[just=left]
+		"Body System|#{nbspace 3} Preferred Term|#{nbspace 6} Severity";
+	define col0			/display "Placebo|N=&n0";
+	define col1			/display "Active|N=&n1";
+	define col2			/display "Overall|N=&n2";
+	
+	compute after section ;
+		line '#{newline}';
+	endcomp;
+	
+	title1 j=l 'Medcomplitics/RX655-T'
+		   j=r 'Page 1 of 3';
+	title2 j=c 'Table 5.1';
+	title3 j=c 'Adverse Events';
+	title4 j=c "By Body System, Prefereed Term, and Greatest Severity";
+run;
+ods pdf close;
+		   	
